@@ -1,0 +1,10 @@
+<launch>
+  <!-- imu_odom -->
+  <arg name="data" default="imu/data_calibrated" />
+  <node pkg="memsense_imu" type="imu_odom_node" name="imu_odom_node" output="screen">
+    <remap from="data" to="$(arg data)" />
+    <param name="odometer_frame_id" value="imu_odom" type="string"/>
+    <param name="imu_frame_id" value="imu" type="string"/>
+    <param name="epsilon" value="1e-3" type="double">
+  </node>
+</launch>

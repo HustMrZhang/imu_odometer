@@ -1,0 +1,30 @@
+<package>
+  <description brief="imu_odometer">
+    
+    This package provides an IMU data integrator to be used with IMU's that do 
+    no provide orientation and/or linear velocity measurments.
+    
+    The imu_odom_node just integrates the angular velocity to obtain the current
+    orientation, and the linear acceleration to get the current linear velocity.
+    Received and integrated data are gathered and published in a 
+    nav_msgs/Odometry message.
+    
+    The integration process is initialized when the first imu message arrives.
+    The angular and linear velocity speed is assumed to be null.
+    The orientation is computed comparing the receviced acceleration 
+    with the standard gravity. Hence, pitch and roll are referenced 
+    with regard to the earth, while yaw is set to zero.
+    
+    
+  </description>
+  <author>Joan Pau Beltran</author>
+  <license>GPL</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/imu_odometer</url>
+  <depend package="roscpp"/>
+  <depend package="sensor_msgs"/>
+  <depend package="nav_msgs"/>
+  <depend package="tf"/>
+</package>
+
+
