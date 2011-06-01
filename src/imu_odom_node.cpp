@@ -28,7 +28,9 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
 #include <geometry_msgs/Vector3.h>
+#include <LinearMath/btMatrix3x3.h> // for covariance matrix products
 #include <cmath>
+
 
 class ImuOdom
 {
@@ -48,19 +50,24 @@ private:
   // subscribers and publishers
   ros::Subscriber imu_subs_;
   ros::Publisher odom_publ_;
-  nav_msgs::Odometry odom_msg_;
 
   // frames
   std::string frame_id_;
   std::string child_frame_id_;
 
   // transforms
-  tf::TransformBroadcaster odom_broadcaster_;
-  tf::StampedTransform odom_tf_;
+  tf::TransformBroadcaster tf_broadcaster_;
 
-  // integrated magnitudes in the initial frame
+  // observed and integrated magnitudes
+  tf::Vector3 lin_acc_;
   tf::Vector3 lin_vel_;
+  tf::Vector3 ang_vel_;
   tf::Quaternion ori_quat_;
+  btMatrix3x3 lin_acc_cov_;
+  btMatrix3x3 lin_vel_cov_;
+  btMatrix3x3 ang_vel_cov_;
+  btMatrix3x3 ori_cov_;
+
 
   // time
   ros::Time last_time_, current_time_;
@@ -72,14 +79,18 @@ private:
   bool odom_ready_;
 
   // standard gravity constant
-  static const double G_STD_ = 9.80665;
+  static const double G_STD_;
+  static const tf::Vector3 G_VEC_;
 
   bool initializeOdom(const sensor_msgs::ImuConstPtr& data);
   void updateOdom(const sensor_msgs::ImuConstPtr& data);
   void dataReceivedCallback(const sensor_msgs::ImuConstPtr& data);
+  void publishMsgAndTf();
 
 };
 
+const double ImuOdom::G_STD_ = 9.80665;
+const tf::Vector3 ImuOdom::G_VEC_(0.0,0.0,G_STD_);
 
 ImuOdom::ImuOdom()
 : odom_ready_(false)
@@ -91,15 +102,6 @@ void ImuOdom::initParams()
   priv_.param<std::string>("odometer_frame_id",frame_id_,"imu_odom");
   priv_.param<std::string>("imu_frame_id",child_frame_id_,"imu");
   priv_.param("epsilon",epsilon_,1e-3);
-
-  odom_msg_.header.frame_id = frame_id_;
-  odom_msg_.child_frame_id = child_frame_id_;
-  odom_tf_.frame_id_ = frame_id_;
-  odom_tf_.child_frame_id_ = child_frame_id_;
-
-  lin_vel_ = tf::Vector3(0.0, 0.0, 0.0);
-  ori_quat_ = tf::createIdentityQuaternion();
-  current_time_ = ros::Time::now();
 }
 
 void ImuOdom::advertiseOutputTopics()
@@ -118,25 +120,45 @@ void ImuOdom::subscribeInputTopics()
 
 bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
 {
-  tf::Vector3 curr_g;
-  tf::vector3MsgToTF(data->linear_acceleration, curr_g);
-  double gx = data->linear_acceleration.x;
-  double gy = data->linear_acceleration.y;
-  double gz = data->linear_acceleration.z;
-  double g_length = sqrt(gx*gx + gy*gy + gz*gz);
-  if ( abs(g_length - G_STD_) < epsilon_ )
-  {
-    ROS_WARN_STREAM("Could not initialize imu data integration "
-                    "from a non static condition (imu acceleration is "
-                    << g_length << " m/s^2)");
-    return false;
-  }
-  lin_vel_ = tf::Vector3(0.0, 0.0, 0.0);
-  ori_quat_.setEuler(0.0,atan2(gz,gx),atan2(gy,gz));
-  ROS_INFO_STREAM("Euler is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
-  ori_quat_.setRPY(0.0,asin(gx/g_length),atan2(gy,gz));
-  ROS_INFO_STREAM("RPY is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
   current_time_ = data->header.stamp;
+  tf::vector3MsgToTF(data->linear_acceleration, lin_acc_ );
+  tf::vector3MsgToTF(data->angular_velocity, ang_vel_ );
+  tf::quaternionMsgToTF(data->orientation, ori_quat_);
+  lin_vel_.setValue(0.0, 0.0, 0.0);
+  for (int i=0; i<3; i++)
+    for (int j=0; j<3; j++)
+    {
+      lin_acc_cov_[i][j] = data->linear_acceleration_covariance[3*i+j];
+      ang_vel_cov_[i][j] = data->angular_velocity_covariance[3*i+j];
+      ori_cov_[i][j] = data->orientation_covariance[3*i+j];
+      lin_vel_cov_[i][j] = 0.0;
+    }
+
+  // check if orientation was actually in the Imu message
+  if (ori_cov_[0][0]<0)
+  {
+    const double gx = data->linear_acceleration.x;
+    const double gy = data->linear_acceleration.y;
+    const double gz = data->linear_acceleration.z;
+    const double g_length = sqrt(gx*gx + gy*gy + gz*gz);
+    if ( abs(g_length - G_STD_) < epsilon_ )
+    {
+      ROS_WARN_STREAM("Could not initialize imu data angular integration "
+                      "from a non static condition (imu acceleration is "
+                      << g_length << " m/s^2)");
+      return false;
+    }
+    ori_quat_.setEuler(0.0,atan2(gz,gx),atan2(gy,gz));
+    ROS_INFO_STREAM("Euler is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
+    ori_quat_.setRPY(0.0,asin(gx/g_length),atan2(gy,gz));
+    ROS_INFO_STREAM("RPY is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
+    const double a = gy*gy + gz*gz;
+    const double b = sqrt(a);
+    const double c = a + gx*gx;
+    ori_cov_.setValue( 0.0, gz/a, -gy/a, b/c , -(gx*gy)/(b*c) , -(gx*gz)/(b*c), 0.0, 0.0, 0.0 );
+    ori_cov_ *= lin_acc_cov_.timesTranspose(ori_cov_);
+  }
+
   return true;
 }
 
@@ -145,40 +167,79 @@ void ImuOdom::updateOdom(const sensor_msgs::ImuConstPtr& data)
   // update time values
   last_time_ = current_time_;
   current_time_ = data->header.stamp;
-  double dt = (current_time_ - last_time_).toSec();
+  const double dt = (current_time_ - last_time_).toSec();
+  const double dt2 = dt*dt;
+
+  // take angular velocity from message
+  tf::vector3MsgToTF(data->angular_velocity, ang_vel_);
+  for (int i=0; i<3; i++)
+    for (int j=0; j<3; j++)
+      ang_vel_cov_ [i][j] = data->angular_velocity_covariance[3*i+j];
+
+  // update orientation in initial frame if it is not filled in the message
+  // (according to p. 15 of Guidance and Control of Ocean Vehicles by Fossen)
+  if (data->orientation_covariance[0]<0)
+  {
+    ori_quat_ += (ori_quat_*ang_vel_) * (dt*0.5);
+    ori_quat_.normalize();
+    // btMatrix3x3 does not provide a sum operator
+    ori_cov_[0] += dt2*ang_vel_cov_[0];
+    ori_cov_[1] += dt2*ang_vel_cov_[1];
+    ori_cov_[2] += dt2*ang_vel_cov_[2];
+  }
+  else
+  {
+    tf::quaternionMsgToTF(data->orientation,ori_quat_);
+    ori_cov_.setFromOpenGLSubMatrix(data->orientation_covariance.data());
+//    for (int i=0; i<3; i++)
+//      for (int j=0; j<3; j++)
+//        ori_cov_ [i][j] = data->orientation_covariance[3*i+j];
+  }
+
+  // update acceleration correcting gravity in the body-fixed frame
+  tf::vector3MsgToTF(data->linear_acceleration, lin_acc_);
+  lin_acc_ -= tf::Transform(ori_quat_).inverse()*G_VEC_; // correct gravity
+  for (int i=0; i<3; i++)
+    for (int j=0; j<3; j++)
+      lin_acc_cov_ [i][j] = data->linear_acceleration_covariance[3*i+j];
 
   // update velocity in body-fixed frame
-  tf::Vector3 lin_acc;
-  tf::vector3MsgToTF(data->linear_acceleration, lin_acc);
-  lin_acc -= odom_tf_*tf::Vector3(0,0,G_STD_); // correct gravity
-  lin_vel_ += dt * lin_acc;
-  
-  // update orientation in initial frame
-  // (according to p. 15 of Guidance and Control of Ocean Vehicles by Fossen)
-  tf::Vector3 ang_vel;
-  tf::vector3MsgToTF(data->angular_velocity, ang_vel);
-  ori_quat_ += (ori_quat_*ang_vel) * (dt*0.5);
-  ori_quat_.normalize();
-  
-  // update transform with new orientation (do it now to use it just below)
-  odom_tf_.stamp_ = current_time_;
-  odom_tf_.setRotation(ori_quat_);
+  lin_vel_ += dt * lin_acc_;
+  lin_vel_cov_[0] += dt2*lin_acc_cov_[0];
+  lin_vel_cov_[1] += dt2*lin_acc_cov_[1];
+  lin_vel_cov_[2] += dt2*lin_acc_cov_[2];
 
-  // TODO check linear velocity frame and covariances
-  
-  // update odometry message
-  odom_msg_.header.stamp = current_time_;
-  odom_msg_.twist.twist.angular = data->angular_velocity;
-  tf::vector3TFToMsg(lin_vel_, odom_msg_.twist.twist.linear);
-  tf::quaternionTFToMsg(ori_quat_, odom_msg_.pose.pose.orientation);
+  // TODO check linear velocity frame and orientation and velocity covariances
+
+}
+
+void ImuOdom::publishMsgAndTf()
+{
+  nav_msgs::OdometryPtr odom_msg(new nav_msgs::Odometry);
+  odom_msg->header.stamp = current_time_;
+  odom_msg->header.frame_id = frame_id_;
+  odom_msg->child_frame_id = child_frame_id_;
+  tf::quaternionTFToMsg(ori_quat_, odom_msg->pose.pose.orientation);
+  tf::vector3TFToMsg(lin_vel_, odom_msg->twist.twist.linear);
+  tf::vector3TFToMsg(ang_vel_, odom_msg->twist.twist.angular);
   for (int i=0; i<3; i++)
     for (int j=0; j<3; j++)
     {
-      odom_msg_.pose.covariance [   6*i+j]  = (i==j) ? -1.0 : 0.0;
-      odom_msg_.pose.covariance [21+6*i+j] += data->orientation_covariance[3*i+j]*dt*dt;
-      odom_msg_.twist.covariance[   6*i+j] += data->linear_acceleration_covariance[3*i+j]*dt*dt;
-      odom_msg_.twist.covariance[21+6*i+j]  = data->angular_velocity_covariance[3*i+j];
+      odom_msg->pose.covariance [6*i+j  ]  = (i==j) ? -1.0 : 0.0;
+      odom_msg->pose.covariance [6*i+j+3]  = ori_cov_[i][j];
+      odom_msg->twist.covariance[6*i+j+18] = lin_vel_cov_[i][j];
+      odom_msg->twist.covariance[6*i+j+21] = ang_vel_cov_[i][j];
     }
+
+  tf::StampedTransform odom_tf;
+  odom_tf.frame_id_ = frame_id_;
+  odom_tf.child_frame_id_ = child_frame_id_;
+  odom_tf.stamp_ = current_time_;
+  odom_tf.setData(tf::Transform(ori_quat_));
+
+  tf_broadcaster_.sendTransform(odom_tf);
+  odom_publ_.publish(odom_msg);
+
 }
 
 void ImuOdom::dataReceivedCallback(const sensor_msgs::ImuConstPtr& data)
@@ -190,13 +251,13 @@ void ImuOdom::dataReceivedCallback(const sensor_msgs::ImuConstPtr& data)
     // update pose and twist from new sample
     updateOdom(data);
     // send pose and transform
-    odom_broadcaster_.sendTransform(odom_tf_);
-    odom_publ_.publish(odom_msg_);
+    publishMsgAndTf();
   }
-  else
+  else if (initializeOdom(data))
   {
-    // initialize the odometer from a static condition at first message arrival
-    odom_ready_ = initializeOdom(data);
+    // odometer initialized from first message arrival in a static condition
+    odom_ready_ = true;
+    publishMsgAndTf();
   }
 }
 
