@@ -137,6 +137,7 @@ bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
   // check if orientation was actually in the Imu message
   if (ori_cov_[0][0]<0)
   {
+    // compute orientation from gravity
     const double gx = data->linear_acceleration.x;
     const double gy = data->linear_acceleration.y;
     const double gz = data->linear_acceleration.z;
@@ -152,6 +153,10 @@ bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
     ROS_INFO_STREAM("Euler is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
     ori_quat_.setRPY(0.0,asin(gx/g_length),atan2(gy,gz));
     ROS_INFO_STREAM("RPY is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
+    // compute covariance of roll, pitch and yaw
+    // from linearization of above formula
+    // (if [gx,gy,gz] covariance is S and [roll,pitch,yaw] = f(gx,gy,gx)
+    //  [roll,pitch,yaw] covariance is  A . S . A^t  with A = J_f(gx,gy,gz))
     const double a = gy*gy + gz*gz;
     const double b = sqrt(a);
     const double c = a + gx*gx;
