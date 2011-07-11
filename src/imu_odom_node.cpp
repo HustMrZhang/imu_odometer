@@ -142,26 +142,30 @@ bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
     const double gy = data->linear_acceleration.y;
     const double gz = data->linear_acceleration.z;
     const double g_length = sqrt(gx*gx + gy*gy + gz*gz);
-    if ( abs(g_length - G_STD_) < epsilon_ )
+    if ( const double e = abs(g_length - G_STD_) > epsilon_ )
     {
       ROS_WARN_STREAM("Could not initialize imu data angular integration "
                       "from a non static condition (imu acceleration is "
-                      << g_length << " m/s^2)");
+                      << g_length << " m/s^2, deviation from static is condition is " 
+                      << e << "  )");
       return false;
     }
-    ori_quat_.setEuler(0.0,atan2(gz,gx),atan2(gy,gz));
-    ROS_INFO_STREAM("Euler is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
-    ori_quat_.setRPY(0.0,asin(gx/g_length),atan2(gy,gz));
-    ROS_INFO_STREAM("RPY is : " << ori_quat_.x() << " " << ori_quat_.y() << " " << ori_quat_.z() );
+    const double roll = atan2(gy,gz);
+    const double pitch = -asin(gx/g_length);
+    const double yaw = 0.0;
+    ori_quat_.setRPY(roll,pitch,yaw);
+    ROS_INFO_STREAM("IMU odometer initialized with RPY : " 
+                    << roll << " " << pitch << " " << yaw );
     // compute covariance of roll, pitch and yaw
     // from linearization of above formula
     // (if [gx,gy,gz] covariance is S and [roll,pitch,yaw] = f(gx,gy,gx)
     //  [roll,pitch,yaw] covariance is  A . S . A^t  with A = J_f(gx,gy,gz))
-    const double a = gy*gy + gz*gz;
-    const double b = sqrt(a);
-    const double c = a + gx*gx;
-    ori_cov_.setValue( 0.0, gz/a, -gy/a, b/c , -(gx*gy)/(b*c) , -(gx*gz)/(b*c), 0.0, 0.0, 0.0 );
-    ori_cov_ *= lin_acc_cov_.timesTranspose(ori_cov_);
+    // const double a = gy*gy + gz*gz;
+    // const double b = sqrt(a);
+    // const double c = a + gx*gx;
+    // ori_cov_.setValue( 0.0, gz/a, -gy/a, b/c , -(gx*gy)/(b*c) , -(gx*gz)/(b*c), 0.0, 0.0, 0.0 );
+    // ori_cov_ *= lin_acc_cov_.timesTranspose(ori_cov_);
+    ori_cov_.setValue(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   }
 
   return true;
@@ -182,13 +186,27 @@ void ImuOdom::updateOdom(const sensor_msgs::ImuConstPtr& data)
       ang_vel_cov_ [i][j] = data->angular_velocity_covariance[3*i+j];
 
   // update orientation in initial frame if it is not filled in the message
-  // (according to p. 15 of Guidance and Control of Ocean Vehicles by Fossen)
+  // (according to p. 15 of Guidance and Control of Ocean Vehicles by Fossen,
+  // and using a 3D vector error representation for the covariance as described
+  // in http://www.ijs.si/~aude/publications/ras99.pdf)
   if (data->orientation_covariance[0]<0)
   {
     ori_quat_ += (ori_quat_*ang_vel_) * (dt*0.5);
     ori_quat_.normalize();
     // btMatrix3x3 does not provide a sum operator
-    ori_cov_[0] += dt2*ang_vel_cov_[0];
+    const double n0 = ang_vel_[0];
+    const double n1 = ang_vel_[1];
+    const double n2 = ang_vel_[2];
+    const double l = ang_vel_.length();
+    const double a = l*dt;
+    const double c = (1-cos(a)) / l;
+    const double s = sin(a) / l;
+    const double f = (dt-s);
+    btMatrix3x3 R( btQuaternion(ang_vel_, a) );
+    btMatrix3x3 aux = R*ori_cov_.timesTranspose(R);
+    ori_cov_.setValue( aux[0][0] + f*n0*n0 + s,    aux[0][1] + f*n0*n1 - c*n2, aux[0][2] + f*n0*n2 + c*n1,
+                       aux[1][0] + f*n1*n0 + c*n2, aux[1][1] + f*n1*n1 + s,    aux[1][2] + f*n1*n2 - c*n0,
+                       aux[2][0] + f*n2*n0 - c*n1, aux[2][1] + f*n2*n1 + c*n0, aux[2][2] + f*n2*n2 + s );
     ori_cov_[1] += dt2*ang_vel_cov_[1];
     ori_cov_[2] += dt2*ang_vel_cov_[2];
   }
@@ -202,8 +220,9 @@ void ImuOdom::updateOdom(const sensor_msgs::ImuConstPtr& data)
   }
 
   // update acceleration correcting gravity in the body-fixed frame
-  tf::vector3MsgToTF(data->linear_acceleration, lin_acc_);
-  lin_acc_ -= tf::Transform(ori_quat_).inverse()*G_VEC_; // correct gravity
+  tf::Vector3 reading;
+  tf::vector3MsgToTF(data->linear_acceleration, reading);
+  lin_acc_ = tf::Transform(ori_quat_).inverse()*G_VEC_ - reading;
   for (int i=0; i<3; i++)
     for (int j=0; j<3; j++)
       lin_acc_cov_ [i][j] = data->linear_acceleration_covariance[3*i+j];
