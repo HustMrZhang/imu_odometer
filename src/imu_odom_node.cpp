@@ -68,7 +68,6 @@ private:
   btMatrix3x3 ang_vel_cov_;
   btMatrix3x3 ori_cov_;
 
-
   // time
   ros::Time last_time_, current_time_;
   
@@ -135,7 +134,7 @@ bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
     }
 
   // check if orientation was actually in the Imu message
-  if (ori_cov_[0][0]<0)
+  if (ori_cov_[0][0]<0.0)
   {
     // compute orientation from gravity
     const double gx = data->linear_acceleration.x;
@@ -154,6 +153,7 @@ bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
     const double pitch = -asin(gx/g_length);
     const double yaw = 0.0;
     ori_quat_.setRPY(roll,pitch,yaw);
+    ori_cov_.setValue(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     ROS_INFO_STREAM("IMU odometer initialized with RPY : " 
                     << roll << " " << pitch << " " << yaw );
     // compute covariance of roll, pitch and yaw
@@ -165,9 +165,7 @@ bool ImuOdom::initializeOdom(const sensor_msgs::ImuConstPtr& data)
     // const double c = a + gx*gx;
     // ori_cov_.setValue( 0.0, gz/a, -gy/a, b/c , -(gx*gy)/(b*c) , -(gx*gz)/(b*c), 0.0, 0.0, 0.0 );
     // ori_cov_ *= lin_acc_cov_.timesTranspose(ori_cov_);
-    ori_cov_.setValue(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   }
-
   return true;
 }
 
@@ -185,14 +183,19 @@ void ImuOdom::updateOdom(const sensor_msgs::ImuConstPtr& data)
     for (int j=0; j<3; j++)
       ang_vel_cov_ [i][j] = data->angular_velocity_covariance[3*i+j];
 
-  // update orientation in initial frame if it is not filled in the message
-  // (according to p. 15 of Guidance and Control of Ocean Vehicles by Fossen,
-  // and using a 3D vector error representation for the covariance as described
-  // in http://www.ijs.si/~aude/publications/ras99.pdf)
-  if (data->orientation_covariance[0]<0)
+  // Update orientation in initial frame if it is not filled in the message.
+  // An option is to the angular motion equation by an Euler method
+  // as in p. 15 of Guidance and Control of Ocean Vehicles by Fossen.
+  // The following uses a quaternion based multiplicative aproach
+  // and a 3D vector error representation for the covariance as described
+  // in http://www.ijs.si/~aude/publications/ras99.pdf
+  // (Note that the factors order is inverted to follow ros convention
+  // on quaternion-based attitude representation).
+  if (data->orientation_covariance[0]<0.0)
   {
-    ori_quat_ += (ori_quat_*ang_vel_) * (dt*0.5);
-    ori_quat_.normalize();
+    // ori_quat_ += (ori_quat_*ang_vel_) * (dt*0.5);
+    // ori_quat_.normalize();
+    ori_quat_ *= btQuaternion(ang_vel_,dt*ang_vel_.length());
     // btMatrix3x3 does not provide a sum operator
     const double n0 = ang_vel_[0];
     const double n1 = ang_vel_[1];
@@ -260,7 +263,6 @@ void ImuOdom::publishMsgAndTf()
   odom_tf.child_frame_id_ = child_frame_id_;
   odom_tf.stamp_ = current_time_;
   odom_tf.setData(tf::Transform(ori_quat_));
-
   tf_broadcaster_.sendTransform(odom_tf);
   odom_publ_.publish(odom_msg);
 
@@ -271,7 +273,6 @@ void ImuOdom::dataReceivedCallback(const sensor_msgs::ImuConstPtr& data)
   
   if (odom_ready_)
   {
-
     // update pose and twist from new sample
     updateOdom(data);
     // send pose and transform
