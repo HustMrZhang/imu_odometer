@@ -28,7 +28,6 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
 #include <geometry_msgs/Vector3.h>
-#include <LinearMath/btMatrix3x3.h> // for covariance matrix products
 #include <cmath>
 
 
@@ -63,10 +62,10 @@ private:
   tf::Vector3 lin_vel_;
   tf::Vector3 ang_vel_;
   tf::Quaternion ori_quat_;
-  btMatrix3x3 lin_acc_cov_;
-  btMatrix3x3 lin_vel_cov_;
-  btMatrix3x3 ang_vel_cov_;
-  btMatrix3x3 ori_cov_;
+  tf::Matrix3x3 lin_acc_cov_;
+  tf::Matrix3x3 lin_vel_cov_;
+  tf::Matrix3x3 ang_vel_cov_;
+  tf::Matrix3x3 ori_cov_;
 
   // time
   ros::Time last_time_, current_time_;
@@ -195,7 +194,7 @@ void ImuOdom::updateOdom(const sensor_msgs::ImuConstPtr& data)
   {
     // ori_quat_ += (ori_quat_*ang_vel_) * (dt*0.5);
     // ori_quat_.normalize();
-    ori_quat_ *= btQuaternion(ang_vel_,dt*ang_vel_.length());
+    ori_quat_ *= tf::Quaternion(ang_vel_,dt*ang_vel_.length());
     // btMatrix3x3 does not provide a sum operator
     const double n0 = ang_vel_[0];
     const double n1 = ang_vel_[1];
@@ -205,8 +204,8 @@ void ImuOdom::updateOdom(const sensor_msgs::ImuConstPtr& data)
     const double c = (1-cos(a)) / l;
     const double s = sin(a) / l;
     const double f = (dt-s);
-    btMatrix3x3 R( btQuaternion(ang_vel_, a) );
-    btMatrix3x3 aux = R*ori_cov_.timesTranspose(R);
+    tf::Matrix3x3 R( tf::Quaternion(ang_vel_, a) );
+    tf::Matrix3x3 aux = R*ori_cov_.timesTranspose(R);
     ori_cov_.setValue( aux[0][0] + f*n0*n0 + s,    aux[0][1] + f*n0*n1 - c*n2, aux[0][2] + f*n0*n2 + c*n1,
                        aux[1][0] + f*n1*n0 + c*n2, aux[1][1] + f*n1*n1 + s,    aux[1][2] + f*n1*n2 - c*n0,
                        aux[2][0] + f*n2*n0 - c*n1, aux[2][1] + f*n2*n1 + c*n0, aux[2][2] + f*n2*n2 + s );
