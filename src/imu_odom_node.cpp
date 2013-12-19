@@ -80,6 +80,7 @@ private:
 
 };
 
+const double ImuOdom::G_STD_;
 
 ImuOdom::ImuOdom()
 : odom_ready_(false)

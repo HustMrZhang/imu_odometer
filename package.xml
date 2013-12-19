@@ -1,6 +1,7 @@
 <package>
-  <description brief="imu_odometer">
-    
+  <name>imu_odometer</name>
+  <version>0.0.1</version>
+  <description>
     This package provides an IMU data integrator to be used with IMU's that do 
     no provide orientation and/or linear velocity measurments.
     
@@ -14,17 +15,22 @@
     The orientation is computed comparing the receviced acceleration 
     with the standard gravity. Hence, pitch and roll are referenced 
     with regard to the earth, while yaw is set to zero.
-    
-    
   </description>
   <author>Joan Pau Beltran</author>
-  <license>GPL</license>
-  <review status="unreviewed" notes=""/>
-  <url>http://ros.org/wiki/imu_odometer</url>
-  <depend package="roscpp"/>
-  <depend package="sensor_msgs"/>
-  <depend package="nav_msgs"/>
-  <depend package="tf"/>
+  <maintainer email="pl.negre@uib.cat">Pep Lluis Negre</maintainer>
+  <license>BSD</license>
+  <url type="website">https://github.com/srv/imu_odometer</url>
+  <url type="bugtracker">https://github.com/srv/imu_odometer/issues</url>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>nav_msgs</build_depend>
+
+  <run_depend>roscpp</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+  <run_depend>tf</run_depend>
+  <run_depend>nav_msgs</run_depend>
 </package>
-
-
